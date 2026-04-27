@@ -23,7 +23,7 @@ api.interceptors.response.use(
         if (err.response?.status === 401) {
             localStorage.removeItem('gym_token');
             localStorage.removeItem('gym_user');
-            window.location.href = '/login';
+            //window.location.href = '/login';
         }
         return Promise.reject(err);
     }
