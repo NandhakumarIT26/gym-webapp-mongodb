@@ -4,7 +4,10 @@ const Attendance = require('../models/Attendance');
 const { serializeAttendance } = require('../utils/serializers');
 const { formatDate } = require('../utils/date');
 
-const dateOnly = (value) => new Date(`${value}T00:00:00.000Z`);
+const dateOnly = (value) => {
+  const [year, month, day] = value.split('-');
+  return new Date(year, month - 1, day); // local time (IST)
+};
 
 const getAttendance = async (req, res) => {
   try {
