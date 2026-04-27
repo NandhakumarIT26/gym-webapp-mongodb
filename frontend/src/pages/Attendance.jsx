@@ -52,7 +52,7 @@ export default function Attendance() {
 
     const fetchToday = async () => {
         try {
-            const today = new Date().toISOString().split('T')[0];
+            const today = new Date().toLocaleDateString('en-CA');
             const { data } = await api.get('/attendance', { params: { date: today } });
             setRecords(data);
         } catch { }
