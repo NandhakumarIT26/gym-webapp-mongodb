@@ -3,11 +3,16 @@ import axios from 'axios';
 const api = axios.create({
     baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api',
 });
+const isUsableToken = (value) =>
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    value !== 'undefined' &&
+    value !== 'null';
 
 // Attach JWT token automatically
 api.interceptors.request.use((config) => {
     const token = localStorage.getItem('gym_token');
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+    if (isUsableToken(token)) config.headers.Authorization = `Bearer ${token.trim()}`;
     return config;
 });
 

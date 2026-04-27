@@ -31,11 +31,25 @@ export default function Login() {
                 username: form.username,
                 password: form.password,
             });
-            login({ username: data.username }, data.token);
-            navigate('/');
-            toast.success(mode === 'register' ? '🎉 Admin account created! Welcome!' : `Welcome back, ${data.username}!`);
+            const payload = data?.data ?? data;
+            const token =
+                payload?.token ??
+                payload?.accessToken ??
+                payload?.jwt ??
+                payload?.access?.token;
+            if (!token || token === 'undefined' || token === 'null') {
+                throw new Error('No token returned from server');
+            }
+            const username = payload?.username || payload?.user?.username || form.username;
+            login({ username }, token);
+            navigate('/', { replace: true });
+            toast.success(mode === 'register' ? '🎉 Admin account created! Welcome!' : `Welcome back, ${username}!`);
         } catch (err) {
-            toast.error(err.response?.data?.error || (mode === 'register' ? 'Registration failed' : 'Login failed'));
+            toast.error(
+                err.response?.data?.error ||
+                err.message ||
+                (mode === 'register' ? 'Registration failed' : 'Login failed')
+            );
         } finally {
             setLoading(false);
         }

@@ -1,67 +1,79 @@
-const pool = require('../config/db');
+const Member = require('../models/Member');
+const Attendance = require('../models/Attendance');
+const { serializeAttendance, serializeMember } = require('../utils/serializers');
 
-// GET /api/dashboard
 const getDashboard = async (req, res) => {
-    try {
-        const today = new Date().toISOString().split('T')[0];
-        const in3Days = new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0];
-        const in7Days = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+  try {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const today = new Date(`${todayStr}T00:00:00.000Z`);
+    const in7Days = new Date(today);
+    in7Days.setDate(in7Days.getDate() + 7);
 
-        const [[totals]] = await pool.query(`
-      SELECT
-        COUNT(*) AS total_members,
-        SUM(CASE WHEN expiry_date >= CURDATE() OR expiry_date IS NULL THEN 1 ELSE 0 END) AS active_members,
-        SUM(CASE WHEN expiry_date < CURDATE() THEN 1 ELSE 0 END) AS expired_members,
-        SUM(CASE WHEN expiry_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS expiring_soon
-      FROM members
-    `);
+    const members = await Member.find().populate('plan_id');
 
-        const [[todayAttendance]] = await pool.query(
-            'SELECT COUNT(*) AS today_checkins FROM attendance WHERE check_in_date = ?',
-            [today]
-        );
+    let activeMembers = 0;
+    let expiredMembers = 0;
+    let expiringSoon = 0;
 
-        // Recent check-ins (last 10)
-        const [recentCheckins] = await pool.query(`
-      SELECT a.*, m.name AS member_name, m.phone
-      FROM attendance a JOIN members m ON a.member_id = m.id
-      WHERE a.check_in_date = ?
-      ORDER BY a.check_in_time DESC LIMIT 10
-    `, [today]);
+    members.forEach((m) => {
+      if (!m.expiry_date || new Date(m.expiry_date) >= today) {
+        activeMembers += 1;
+      }
+      if (m.expiry_date && new Date(m.expiry_date) < today) {
+        expiredMembers += 1;
+      }
+      if (m.expiry_date && new Date(m.expiry_date) >= today && new Date(m.expiry_date) <= in7Days) {
+        expiringSoon += 1;
+      }
+    });
 
-        // Expiring memberships
-        const [expiringMembers] = await pool.query(`
-      SELECT m.*, p.name AS plan_name
-      FROM members m LEFT JOIN membership_plans p ON m.plan_id = p.id
-      WHERE m.expiry_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-      ORDER BY m.expiry_date ASC LIMIT 10
-    `);
+    const todayAttendance = await Attendance.countDocuments({ check_in_date: today });
 
-        // Monthly attendance for chart (last 7 days)
-        const [weeklyAttendance] = await pool.query(`
-      SELECT check_in_date, COUNT(*) AS count
-      FROM attendance
-      WHERE check_in_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-      GROUP BY check_in_date
-      ORDER BY check_in_date ASC
-    `);
+    const recentCheckinsRaw = await Attendance.find({ check_in_date: today })
+      .populate({ path: 'member_id', select: 'name phone' })
+      .sort({ check_in_time: -1 })
+      .limit(10);
 
-        res.json({
-            stats: {
-                total_members: totals.total_members || 0,
-                active_members: totals.active_members || 0,
-                expired_members: totals.expired_members || 0,
-                expiring_soon: totals.expiring_soon || 0,
-                today_checkins: todayAttendance.today_checkins || 0,
-            },
-            recent_checkins: recentCheckins,
-            expiring_members: expiringMembers,
-            weekly_attendance: weeklyAttendance,
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
-    }
+    const expiringMembersRaw = members
+      .filter((m) => m.expiry_date && new Date(m.expiry_date) >= today && new Date(m.expiry_date) <= in7Days)
+      .sort((a, b) => new Date(a.expiry_date) - new Date(b.expiry_date))
+      .slice(0, 10);
+
+    const weekStart = new Date(today);
+    weekStart.setDate(weekStart.getDate() - 7);
+
+    const weekly = await Attendance.aggregate([
+      { $match: { check_in_date: { $gte: weekStart } } },
+      {
+        $group: {
+          _id: '$check_in_date',
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    const weeklyAttendance = weekly.map((w) => ({
+      check_in_date: new Date(w._id).toISOString().split('T')[0],
+      count: w.count,
+    }));
+
+    return res.json({
+      stats: {
+        total_members: members.length,
+        active_members: activeMembers,
+        expired_members: expiredMembers,
+        expiring_soon: expiringSoon,
+        today_checkins: todayAttendance,
+      },
+      recent_checkins: recentCheckinsRaw.map(serializeAttendance),
+      expiring_members: expiringMembersRaw.map(serializeMember),
+      weekly_attendance: weeklyAttendance,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
 };
 
 module.exports = { getDashboard };

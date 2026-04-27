@@ -1,115 +1,139 @@
-const pool = require('../config/db');
 const QRCode = require('qrcode');
+const Member = require('../models/Member');
+const Attendance = require('../models/Attendance');
+const { serializeAttendance } = require('../utils/serializers');
+const { formatDate } = require('../utils/date');
 
-// GET /api/attendance
+const dateOnly = (value) => new Date(`${value}T00:00:00.000Z`);
+
 const getAttendance = async (req, res) => {
-    try {
-        const { date, member_id } = req.query;
-        let query = `
-      SELECT a.*, m.name AS member_name, m.phone
-      FROM attendance a
-      JOIN members m ON a.member_id = m.id
-    `;
-        const params = [];
-        const conditions = [];
-        if (date) { conditions.push('a.check_in_date = ?'); params.push(date); }
-        if (member_id) { conditions.push('a.member_id = ?'); params.push(member_id); }
-        if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
-        query += ' ORDER BY a.check_in_date DESC, a.check_in_time DESC LIMIT 100';
-        const [rows] = await pool.query(query, params);
-        res.json(rows);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
+  try {
+    const { date, member_id } = req.query;
+    const filter = {};
+
+    if (date) {
+      filter.check_in_date = dateOnly(date);
     }
+    if (member_id) {
+      filter.member_id = member_id;
+    }
+
+    const rows = await Attendance.find(filter)
+      .populate({ path: 'member_id', select: 'name phone' })
+      .sort({ check_in_date: -1, check_in_time: -1 })
+      .limit(100);
+
+    return res.json(rows.map(serializeAttendance));
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
 };
 
-// POST /api/attendance/checkin — manual check-in by name/phone
 const manualCheckin = async (req, res) => {
-    try {
-        const { search } = req.body;
-        if (!search) return res.status(400).json({ error: 'Search term required' });
+  try {
+    const { search } = req.body;
+    if (!search) return res.status(400).json({ error: 'Search term required' });
 
-        const [members] = await pool.query(
-            'SELECT * FROM members WHERE name LIKE ? OR phone LIKE ? LIMIT 5',
-            [`%${search}%`, `%${search}%`]
-        );
-        if (members.length === 0) return res.status(404).json({ error: 'No member found' });
+    const members = await Member.find({
+      $or: [
+        { name: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+      ],
+    })
+      .select('name phone')
+      .limit(5);
 
-        // Return matches for selection if more than 1
-        if (members.length > 1) return res.json({ multiple: true, members });
+    if (members.length === 0) return res.status(404).json({ error: 'No member found' });
 
-        return await recordCheckin(members[0].id, 'manual', res);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
+    if (members.length > 1) {
+      return res.json({
+        multiple: true,
+        members: members.map((m) => ({ id: m._id.toString(), name: m.name, phone: m.phone })),
+      });
     }
+
+    return recordCheckin(members[0]._id.toString(), 'manual', res);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
 };
 
-// POST /api/attendance/checkin-by-id
 const checkinById = async (req, res) => {
-    try {
-        const { member_id } = req.body;
-        if (!member_id) return res.status(400).json({ error: 'member_id required' });
-        return await recordCheckin(member_id, 'manual', res);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
-    }
+  try {
+    const { member_id } = req.body;
+    if (!member_id) return res.status(400).json({ error: 'member_id required' });
+    return recordCheckin(member_id, 'manual', res);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
 };
 
-// POST /api/attendance/qr-checkin
 const qrCheckin = async (req, res) => {
-    try {
-        const { qr_token } = req.body;
-        if (!qr_token) return res.status(400).json({ error: 'qr_token required' });
+  try {
+    const { qr_token } = req.body;
+    if (!qr_token) return res.status(400).json({ error: 'qr_token required' });
 
-        const [members] = await pool.query('SELECT * FROM members WHERE qr_token = ?', [qr_token]);
-        if (members.length === 0) return res.status(404).json({ error: 'Invalid QR code' });
+    const member = await Member.findOne({ qr_token });
+    if (!member) return res.status(404).json({ error: 'Invalid QR code' });
 
-        return await recordCheckin(members[0].id, 'qr', res);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
-    }
+    return recordCheckin(member._id.toString(), 'qr', res);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
 };
 
-// GET /api/attendance/qr/:memberId — generate QR image
 const getMemberQR = async (req, res) => {
-    try {
-        const [members] = await pool.query('SELECT qr_token, name FROM members WHERE id = ?', [req.params.memberId]);
-        if (members.length === 0) return res.status(404).json({ error: 'Member not found' });
+  try {
+    const member = await Member.findById(req.params.memberId).select('qr_token name');
+    if (!member) return res.status(404).json({ error: 'Member not found' });
 
-        const qrData = `GYM_QR:${members[0].qr_token}`;
-        const qrImage = await QRCode.toDataURL(qrData, { width: 300 });
-        res.json({ qr: qrImage, name: members[0].name, qr_token: members[0].qr_token });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
-    }
+    const qrData = `GYM_QR:${member.qr_token}`;
+    const qrImage = await QRCode.toDataURL(qrData, { width: 300 });
+
+    return res.json({ qr: qrImage, name: member.name, qr_token: member.qr_token });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
 };
 
-// Helper
-async function recordCheckin(member_id, method, res) {
-    const now = new Date();
-    const check_in_date = now.toISOString().split('T')[0];
-    const check_in_time = now.toTimeString().split(' ')[0];
+async function recordCheckin(memberId, method, res) {
+  const now = new Date();
+  const check_in_date = formatDate(now);
+  const check_in_time = now.toTimeString().split(' ')[0];
 
-    // Check for duplicate check-in today
-    const [existing] = await pool.query(
-        'SELECT id FROM attendance WHERE member_id = ? AND check_in_date = ?',
-        [member_id, check_in_date]
-    );
-    if (existing.length > 0) {
-        return res.status(409).json({ error: 'Already checked in today', alreadyCheckedIn: true });
+  try {
+    await Attendance.create({
+      member_id: memberId,
+      check_in_date: dateOnly(check_in_date),
+      check_in_time,
+      method,
+    });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'Already checked in today', alreadyCheckedIn: true });
     }
+    throw err;
+  }
 
-    await pool.query(
-        'INSERT INTO attendance (member_id, check_in_date, check_in_time, method) VALUES (?, ?, ?, ?)',
-        [member_id, check_in_date, check_in_time, method]
-    );
-    const [member] = await pool.query('SELECT * FROM members WHERE id = ?', [member_id]);
-    res.status(201).json({ message: 'Check-in recorded', member: member[0], check_in_date, check_in_time });
+  const member = await Member.findById(memberId).populate('plan_id');
+  return res.status(201).json({
+    message: 'Check-in recorded',
+    member: member
+      ? {
+          id: member._id.toString(),
+          name: member.name,
+          phone: member.phone,
+          plan_id: member.plan_id ? member.plan_id._id.toString() : null,
+        }
+      : null,
+    check_in_date,
+    check_in_time,
+  });
 }
 
 module.exports = { getAttendance, manualCheckin, checkinById, qrCheckin, getMemberQR };

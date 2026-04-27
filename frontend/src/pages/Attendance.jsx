@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Search, CheckCircle, QrCode, Clock } from 'lucide-react';
 import api from '../api/client';
@@ -12,8 +12,43 @@ export default function Attendance() {
     const [records, setRecords] = useState([]);
     const [qrInput, setQrInput] = useState('');
     const [activeTab, setActiveTab] = useState('manual'); // manual | qr | history
+    const audioContextRef = useRef(null);
 
-    useEffect(() => { fetchToday(); }, []);
+    useEffect(() => {
+        fetchToday();
+        return () => {
+            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+                audioContextRef.current.close().catch(() => { });
+            }
+        };
+    }, []);
+
+    const playQrSuccessBeep = () => {
+        try {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return;
+
+            if (!audioContextRef.current) {
+                audioContextRef.current = new AudioContextClass();
+            }
+            const ctx = audioContextRef.current;
+            if (ctx.state === 'suspended') {
+                ctx.resume();
+            }
+
+            const oscillator = ctx.createOscillator();
+            const gainNode = ctx.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(1046.5, ctx.currentTime);
+            gainNode.gain.setValueAtTime(0.0001, ctx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.01);
+            gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.2);
+            oscillator.connect(gainNode);
+            gainNode.connect(ctx.destination);
+            oscillator.start(ctx.currentTime);
+            oscillator.stop(ctx.currentTime + 0.2);
+        } catch { }
+    };
 
     const fetchToday = async () => {
         try {
@@ -70,6 +105,7 @@ export default function Attendance() {
         try {
             const { data } = await api.post('/attendance/qr-checkin', { qr_token: token });
             toast.success(`${data.member.name} checked in via QR!`);
+            playQrSuccessBeep();
             setQrInput('');
             fetchToday();
         } catch (err) {

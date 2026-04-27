@@ -1,15 +1,14 @@
-const mysql = require('mysql2/promise');
-require('dotenv').config();
+const mongoose = require('mongoose');
+require('dotenv').config({ override: true });
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'gym_management',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  multipleStatements: true,
-});
+const connectDB = async () => {
+  const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/gym_management';
 
-module.exports = pool;
+  await mongoose.connect(mongoUri, {
+    autoIndex: true,
+  });
+
+  console.log(`Connected to MongoDB: ${mongoUri}`);
+};
+
+module.exports = connectDB;
