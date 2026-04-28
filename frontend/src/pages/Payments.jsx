@@ -62,7 +62,7 @@ export default function Payments() {
         if (!member) return;
         const msg = `Hi ${payment.member_name}! Your gym membership renewal amount is ₹${Number(payment.amount).toLocaleString('en-IN')}. ${payment.payment_link ? `Pay here: ${payment.payment_link}` : 'Please visit the gym to renew.'}`;
         const phone = member.phone.replace(/\D/g, '');
-        window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
+        window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`, '_blank');
     };
 
     return (
